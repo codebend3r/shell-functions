@@ -12,6 +12,9 @@ Options:
 Examples:
   find-video-mkv-issues.py --path=./Movies
   find-video-mkv-issues.py --path=/mnt/media --recursive
+
+Requires ffprobe. The shell version also required `find` and `bc`; neither is
+needed now.
 """
 
 from __future__ import annotations
@@ -105,7 +108,9 @@ def rate_video(
         reasons.append("High bitrate")
 
     score = max(0, min(10, score))
-    return score, "; ".join(reasons) if reasons else "Excellent Plex compatibility"
+    # ";" with no space: the shell version's `IFS='; '; echo "${reasons[*]}"`
+    # joins on the FIRST character of IFS only.
+    return score, ";".join(reasons) if reasons else "Excellent Plex compatibility"
 
 
 def as_int(value: str) -> int:
@@ -145,7 +150,9 @@ def main(argv: list[str] | None = None) -> int:
     total = excellent = good = poor = bad = 0
 
     # macOS ._ sidecars are skipped: they are never real media, and ffprobing
-    # each one would waste a subprocess per file on a NAS scan.
+    # each one would waste a subprocess per file on a NAS scan. The shell
+    # version probed them, failed, and counted each one as Bad - so Total and
+    # Bad both read lower here on a library that has them.
     for path in iter_files(root, extensions=["mkv"], recursive=args.recursive):
         total += 1
 
@@ -177,14 +184,14 @@ def main(argv: list[str] | None = None) -> int:
             )
             or "none"
         )
-        width = as_int(
-            ffprobe_entries(
-                path, "stream=width", stream="v:0", fmt="default=noprint_wrappers=1:nokey=1"
-            )
+        width_raw = ffprobe_entries(
+            path, "stream=width", stream="v:0", fmt="default=noprint_wrappers=1:nokey=1"
         )
-        bitrate = as_int(
-            ffprobe_entries(path, "format=bit_rate", fmt="default=noprint_wrappers=1:nokey=1")
+        bitrate_raw = ffprobe_entries(
+            path, "format=bit_rate", fmt="default=noprint_wrappers=1:nokey=1"
         )
+        width = as_int(width_raw)
+        bitrate = as_int(bitrate_raw)
 
         try:
             filesize = path.stat().st_size
@@ -197,9 +204,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  Video     : {video_codec}", flush=True)
         print(f"  Audio     : {audio_codec}", flush=True)
         print(f"  Subtitles : {subtitle_codec}", flush=True)
-        if width:
+        # `is not None` rather than truthiness: the shell version gated on the
+        # value being numeric, so a literal 0 still printed its line.
+        if width_raw.isdigit():
             print(f"  Resolution: {width}px", flush=True)
-        if bitrate:
+        if bitrate_raw.isdigit():
             print(f"  Bitrate   : {bitrate // 1_000_000} Mbps", flush=True)
 
         if score >= 9:

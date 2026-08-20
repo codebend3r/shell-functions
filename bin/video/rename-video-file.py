@@ -27,7 +27,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from utils import (
     add_bool_flag,
     build_parser,
-    env_bool,
     info,
     iter_files,
     log,
@@ -75,6 +74,10 @@ def build_title_pattern(ignore_words: list[str]) -> re.Pattern[str]:
 
     Order matters and mirrors the perl original: a video code wins over an
     ignored word, which wins over an ordinary word.
+
+    Ignore-words are regex-escaped, where perl interpolated them raw into the
+    alternation. "Leave exactly as written" is what the flag promises, so a
+    word containing a dot should match that dot, not any character.
     """
     parts = [_CODE]
     if ignore_words:
@@ -129,13 +132,26 @@ def clean_segment(text: str, pattern: re.Pattern[str], *, capitalize_preps: bool
 
 
 def clean_folder_name(name: str, pattern: re.Pattern[str], *, capitalize_preps: bool) -> str:
-    """The corrected name for a folder."""
+    """The corrected name for a folder.
+
+    Folders now get the same curly-quote normalisation as files. The shell
+    version appeared to do this too, but both of its folder-branch sed patterns
+    were the plain ASCII apostrophe - two no-ops - so a folder called
+    ``l'auberge`` with a typographic apostrophe was left alone.
+    """
     result = clean_segment(normalize(name), pattern, capitalize_preps=capitalize_preps)
     return _APOSTROPHE_SUFFIX.sub(lambda m: "'" + m.group(1).lower(), result)
 
 
 def clean_file_name(name: str, pattern: re.Pattern[str], *, capitalize_preps: bool) -> str | None:
-    """The corrected name for a file, or None when it cannot be parsed."""
+    """The corrected name for a file, or None when it cannot be parsed.
+
+    Anchored with ``fullmatch`` where the shell version used an unanchored
+    ``[[ =~ ]]`` search. The two agree on every ordinary name; the difference
+    is dot-leading ones, where the shell version matched from after the dot and
+    so renamed ``.hidden movie.mkv`` to ``Hidden Movie.mkv`` - silently
+    un-hiding the file. Those are reported as unparseable instead.
+    """
     normalized = normalize(name)
 
     match = _DASHED_NAME.fullmatch(normalized)
@@ -162,10 +178,13 @@ def safe_rename(source: Path, target: Path, *, kind: str) -> bool:
     A case-only change (``abc`` -> ``Abc``) is still allowed, because on a
     case-insensitive filesystem the target "exists" as the source itself.
     """
-    if target.exists() and not source.samefile(target):
-        warning(f"⚠️ Skipping {kind} (target already exists): {target.name}")
-        return False
     try:
+        # Inside the try: the source can vanish between the walk and the
+        # rename, and samefile() would then raise straight past this function.
+        # The shell version's bare `mv` printed an error and carried on.
+        if target.exists() and not source.samefile(target):
+            warning(f"⚠️ Skipping {kind} (target already exists): {target.name}")
+            return False
         source.rename(target)
     except OSError as exc:
         warning(f"⚠️ Could not rename {source.name}: {exc}")
@@ -178,14 +197,18 @@ def rename_folders(
 ) -> None:
     """Rename folders deepest-first so a parent rename cannot break child paths."""
     directories: list[Path] = []
-    for dirpath, dirnames, _ in os.walk(root, topdown=False, followlinks=False):
+    for dirpath, _, _ in os.walk(root, topdown=False, followlinks=False):
         directory = Path(dirpath)
         if directory == root:
             continue
         if not recursive and directory.parent != root:
             continue
-        dirnames.sort()
         directories.append(directory)
+
+    # Sorting the collected list, not os.walk's dirnames: under topdown=False
+    # the recursion has already happened, so mutating dirnames does nothing.
+    # Deepest first, so renaming a parent cannot invalidate a child's path.
+    directories.sort(key=lambda p: (-len(p.parts), p))
 
     for folder in directories:
         if folder.name.startswith("._"):
@@ -209,7 +232,11 @@ def rename_files(
     root: Path, pattern: re.Pattern[str], *, recursive: bool, capitalize_preps: bool, dry_run: bool
 ) -> None:
     """Rename the .mp4/.mkv files themselves."""
-    for path in iter_files(root, extensions=VIDEO_EXTENSIONS, recursive=recursive):
+    # case_sensitive: this script's find used -name, not -iname, so a file
+    # called "Movie.MKV" was never renamed.
+    for path in iter_files(
+        root, extensions=VIDEO_EXTENSIONS, recursive=recursive, case_sensitive=True
+    ):
         new_name = clean_file_name(path.name, pattern, capitalize_preps=capitalize_preps)
         if new_name is None:
             warning(f"Could not parse filename: {path.name}")
@@ -244,10 +271,14 @@ def main(argv: list[str] | None = None) -> int:
         dest="capitalize_preps",
         help="Capitalize articles and prepositions",
     )
+    # Deliberately NOT env_bool: unlike the delete tools, the shell version
+    # hard-coded DRY_RUN=true and never read the environment. Honouring it here
+    # would let an exported DRY_RUN=false anywhere in the user's shell turn a
+    # preview into a mass rename.
     add_bool_flag(
         parser,
         "--dry-run",
-        default=env_bool("DRY_RUN", True),
+        default=True,
         help="Print renames, change nothing",
     )
     parser.add_argument(

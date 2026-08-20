@@ -40,6 +40,7 @@ from utils import (
     RED,
     YELLOW,
     build_parser,
+    color_enabled,
     info,
     note,
     require_binary,
@@ -117,20 +118,41 @@ query($q: String!, $first: Int!) {
 """
 
 
+# U+FE0F, the emoji presentation selector. It renders the PRECEDING character
+# as an emoji, which is two columns wide even when that base character is a
+# narrow symbol - so it promotes rather than taking zero width of its own.
+# Workflow names like "✔️ Lint" and "⚠️ Nightly" are exactly this shape.
+VARIATION_SELECTOR_16 = "\ufe0f"
+
+
 def display_width(text: str) -> int:
     """Terminal columns ``text`` occupies.
 
     The shell version counted 4-byte UTF-8 sequences and kept a hand-maintained
     list of double-width BMP emoji, which had to grow every time a new icon was
-    added. ``unicodedata`` answers the question directly: wide and fullwidth
-    characters take two columns, combining marks and variation selectors take
-    none, everything else takes one.
+    added. ``unicodedata`` covers the common cases directly: wide and fullwidth
+    characters take two columns, combining marks take none, everything else
+    takes one.
+
+    Known limitation, unchanged from the shell version: a ZWJ sequence such as
+    "👨‍💻" is counted per component rather than as one glyph, so it over-counts.
     """
     width = 0
+    previous = 0
+
     for char in text:
-        if unicodedata.combining(char) or char == "️":
+        if char == VARIATION_SELECTOR_16:
+            # Promote a narrow base to two columns; a base that is already
+            # wide stays wide.
+            if previous == 1:
+                width += 1
+                previous = 2
             continue
-        width += 2 if unicodedata.east_asian_width(char) in ("W", "F") else 1
+        if unicodedata.combining(char):
+            continue
+        previous = 2 if unicodedata.east_asian_width(char) in ("W", "F") else 1
+        width += previous
+
     return width
 
 
@@ -143,10 +165,11 @@ def pad_link(url: str, value: str, width: int) -> str:
     """Same as :func:`pad`, but wraps the text in an OSC 8 hyperlink.
 
     The escape sequences are zero-width, so the padding is computed from the
-    plain text and only the text itself gets wrapped.
+    plain text and only the text itself gets wrapped. Suppressed alongside
+    color, so a piped or NO_COLOR run is plain text throughout.
     """
     padding = " " * max(0, width - display_width(value))
-    if not url:
+    if not url or not color_enabled():
         return value + padding
     return f"\033]8;;{url}\033\\{value}\033]8;;\033\\{padding}"
 
@@ -215,15 +238,19 @@ def pick_suite(suites: list[dict]) -> dict | None:
     def created(suite: dict) -> str:
         return suite["workflowRun"].get("createdAt") or ""
 
+    # sorted(...)[-1], not max(...): jq's `sort_by | last` is a stable sort, so
+    # for suites sharing a createdAt it returns the LAST in document order,
+    # where max() returns the first. GitHub stamps every workflow run triggered
+    # by one push with the same second, so this tie fires constantly.
     live = [s for s in usable if s.get("status") != "COMPLETED"]
     if live:
-        return max(live, key=created)
+        return sorted(live, key=created)[-1]
 
     bad = [s for s in usable if (s.get("conclusion") or "") in BAD_CONCLUSIONS]
     if bad:
-        return max(bad, key=created)
+        return sorted(bad, key=created)[-1]
 
-    return max(usable, key=created)
+    return sorted(usable, key=created)[-1]
 
 
 def build_rows(payload: dict) -> list[dict]:
@@ -256,7 +283,10 @@ def build_rows(payload: dict) -> list[dict]:
         else:
             workflow_run = suite["workflowRun"]
             if suite.get("status") != "COMPLETED":
-                status = (suite.get("status") or "").lower()
+                # `or "unknown"`: jq died outright on a null status, taking the
+                # whole run's output with it. An empty cell would be worse
+                # than saying so.
+                status = (suite.get("status") or "unknown").lower()
                 live = True
             else:
                 status = (suite.get("conclusion") or "unknown").lower()
@@ -325,9 +355,11 @@ def fetch_rows(owners: str, author: str, pr_limit: int) -> list[dict]:
 def render(owners: str, author: str, pr_limit: int) -> None:
     """Draw the table once."""
     single_owner = "," not in owners
-    clock = datetime.now().strftime("%H:%M:%S")
 
     rows = fetch_rows(owners, author, pr_limit)
+    # After the fetch, not before: the shell called date(1) inside the banner,
+    # so in --watch mode the timestamp reflects when the data landed.
+    clock = datetime.now().strftime("%H:%M:%S")
 
     if not rows:
         note("═══════════════════════════════════════════")
@@ -372,7 +404,8 @@ def render(owners: str, author: str, pr_limit: int) -> None:
             "TOOK",
         ]
     )
-    print(f"{MAGENTA}{header}{NC}", flush=True)
+    colors = color_enabled()
+    print(f"{MAGENTA}{header}{NC}" if colors else header, flush=True)
 
     live_count = 0
     for row in rows:
@@ -388,7 +421,7 @@ def render(owners: str, author: str, pr_limit: int) -> None:
             ]
         )
         color = STATUS_COLORS.get(row["status"], NC)
-        print(f"{color}{cells}{NC}", flush=True)
+        print(f"{color}{cells}{NC}" if colors else cells, flush=True)
         if row["live"]:
             live_count += 1
 
@@ -403,17 +436,55 @@ def render(owners: str, author: str, pr_limit: int) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser(
         prog="all-actions",
-        description="🎬 Latest GitHub Actions run for every open PR you authored.",
+        description=(
+            "🎬 Show the latest GitHub Actions run for every open pull request you\n"
+            "   authored, across every repo you own - one row per PR, so a repo with\n"
+            "   five open PRs gets five rows. The repo name is a terminal hyperlink\n"
+            "   to that run.\n\n"
+            "   When a PR's head commit has several workflow runs, the row shows the\n"
+            "   one worth acting on: anything still in flight, else a failure, else\n"
+            "   the most recent run."
+        ),
     )
-    parser.add_argument("--owner", default="", metavar="NAME", help="Owner(s), comma-separated")
-    parser.add_argument("--author", default="", metavar="NAME", help="PR author to match")
-    parser.add_argument("--pr-limit", default="100", metavar="N", dest="pr_limit")
-    parser.add_argument("--interval", default="15", metavar="SECONDS")
+    parser.add_argument(
+        "--owner",
+        default="",
+        metavar="NAME",
+        help="Owner(s) to scan, comma-separated (default: your gh login)",
+    )
+    parser.add_argument(
+        "--author",
+        default="",
+        metavar="NAME",
+        help="PR author to match (default: your gh login)",
+    )
+    parser.add_argument(
+        "--pr-limit",
+        default="100",
+        metavar="N",
+        dest="pr_limit",
+        help="Open PRs to inspect, max 100 (default: 100)",
+    )
+    parser.add_argument(
+        "--interval",
+        default="15",
+        metavar="SECONDS",
+        help="Refresh interval used by --watch (default: 15)",
+    )
     # --watch is special: it is both a bare flag and a flag that carries the
-    # interval, so it cannot use add_bool_flag.
-    parser.add_argument("--watch", nargs="?", const="", default=None, metavar="SECONDS")
+    # interval, so it cannot use add_bool_flag. nargs="?" also accepts the
+    # space form `--watch 30`, which the shell version rejected.
+    parser.add_argument(
+        "--watch",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="SECONDS",
+        help="Refresh every interval until interrupted",
+    )
     args = parser.parse_args(argv)
 
+    # After parsing, unlike the shell version, so --help works without gh.
     require_binary("gh", hint="Install it with `brew install gh`.")
 
     interval_raw = args.interval
@@ -438,6 +509,12 @@ def main(argv: list[str] | None = None) -> int:
     author = args.author
     if not owners or not author:
         login = run_output(["gh", "api", "user", "--jq", ".login"], check=False).strip()
+        if not login:
+            # Without a login the query loses its `user:` qualifier entirely and
+            # silently searches all of GitHub. A token can pass `gh auth status`
+            # and still fail here (missing read:user, unauthorised SSO, a 5xx).
+            warning("❌ Could not determine your gh login. Pass --owner= and --author=.")
+            return 1
         owners = owners or login
         author = author or login
 
@@ -449,7 +526,12 @@ def main(argv: list[str] | None = None) -> int:
         while True:
             # ANSI clear + home, rather than shelling out to clear(1).
             print("\033[2J\033[H", end="", flush=True)
-            render(owners, author, pr_limit)
+            try:
+                render(owners, author, pr_limit)
+            # Broad on purpose: the shell wrapped this as `render || true`.
+            except Exception as exc:
+                # One unexpected payload shape must not end a long watch.
+                warning(f"⚠️  Render failed, retrying next cycle: {exc}")
             info(f"🔁 Refreshing every {interval}s — Ctrl-C to stop.")
             time.sleep(interval)
     except KeyboardInterrupt:

@@ -187,7 +187,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--path", default="", metavar="PATH", help="Directory to scan (required)")
     parser.add_argument(
         "--strategy",
-        default=os.environ.get("STRATEGY", "episode"),
+        # `or`, not a get() default: the shell used ${STRATEGY:-episode}, where
+        # an exported-but-empty value also falls back.
+        default=os.environ.get("STRATEGY") or "episode",
         metavar="MODE",
         help="episode | filename | size | hash | all (default: episode)",
     )
@@ -219,7 +221,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     # Absolute, with ../ collapsed, so group keys built from the parent
-    # directory are stable regardless of how --path was spelled.
+    # directory are stable regardless of how --path was spelled. Note this also
+    # resolves symlinks mid-path, so a logged path can differ from the one the
+    # user typed; grouping and the choice of keeper are unaffected, since every
+    # key shares the same root prefix.
     root = scan_root(args.path).resolve()
 
     if strategy == "size":

@@ -39,6 +39,7 @@ import sys
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from fnmatch import fnmatchcase
 from pathlib import Path
+from typing import NoReturn
 
 # ---------------------------------------------------------------------------
 # Colors
@@ -230,10 +231,17 @@ class BoolFlagParser(argparse.ArgumentParser):
 
     def _rewrite(self, argv: Sequence[str]) -> list[str]:
         rewritten: list[str] = []
-        for token in argv:
-            flag, sep, value = token.partition("=")
+        for index, arg in enumerate(argv):
+            # Everything after a bare `--` is a literal positional, so it must
+            # pass through untouched - rewriting it would report an error
+            # naming an internal flag the user never typed.
+            if arg == "--":
+                rewritten.extend(argv[index:])
+                break
+
+            flag, sep, value = arg.partition("=")
             if not sep or flag not in self._bool_flags:
-                rewritten.append(token)
+                rewritten.append(arg)
                 continue
             try:
                 enabled = parse_bool(value)
@@ -250,15 +258,20 @@ class BoolFlagParser(argparse.ArgumentParser):
         argv = list(sys.argv[1:] if args is None else args)
         return super().parse_known_args(self._rewrite(argv), namespace)
 
-    def error(self, message: str) -> None:  # type: ignore[override]
+    def error(self, message: str) -> NoReturn:
         """Print the message plus full usage and exit 1, as the shell did.
 
         argparse's default is a one-line usage and exit code 2. Every shell
         script here printed ``❌ Unknown argument: X`` followed by the whole
         usage block and exited 1, and the ``.zshrc`` chains distinguish 1 from
         other codes.
+
+        Annotated ``NoReturn`` so callers - notably ``_rewrite``, which falls
+        through to use a variable this branch never assigns - are provably safe.
         """
-        warning(f"❌ {message}")
+        # The hidden companion option is an implementation detail; a user who
+        # typed `--dry-run=false` should not be told about it by name.
+        warning(f"❌ {message.replace(_FALSE_SUFFIX, '')}")
         self.print_help()
         sys.exit(1)
 
@@ -661,6 +674,7 @@ def iter_files(
     recursive: bool = True,
     skip_macos_metadata: bool = True,
     skip_hidden: bool = False,
+    case_sensitive: bool = False,
 ) -> Iterator[Path]:
     """Walk ``root`` yielding files, the replacement for ``find ... -print0``.
 
@@ -670,10 +684,15 @@ def iter_files(
     minutes-long silent stall. Order within each directory is sorted, so runs
     are reproducible without buffering the whole tree.
 
-    ``extensions`` is matched against the end of the FILENAME, case-insensitively,
-    reproducing ``find -iname '*.ext'`` exactly - including for a file literally
-    named ``.mkv``, which a ``Path.suffix`` check would miss because pathlib
-    treats a leading dot as the stem.
+    ``extensions`` is matched against the end of the FILENAME, reproducing
+    ``find -iname '*.ext'`` exactly - including for a file literally named
+    ``.mkv``, which a ``Path.suffix`` check would miss because pathlib treats a
+    leading dot as the stem. Pass ``case_sensitive=True`` for the handful of
+    callers whose shell original used ``-name`` rather than ``-iname``.
+
+    Only regular files are yielded. ``find -type f`` excluded FIFOs, sockets
+    and devices, and a FIFO reaching an ``open()`` blocks forever - which on a
+    hashing pass would hang the whole scan.
 
     Symlinked files are skipped and symlinked directories are not followed,
     matching ``find``'s default (no ``-L``).
@@ -687,12 +706,14 @@ def iter_files(
 
     patterns: tuple[str, ...] | None = None
     if extensions is not None:
-        patterns = tuple(f"*.{ext.lower()}" for ext in extensions)
+        patterns = tuple(f"*.{ext}" if case_sensitive else f"*.{ext.lower()}" for ext in extensions)
 
     def _on_error(exc: OSError) -> None:
         # find(1) printed "Permission denied" to stderr and carried on. Staying
         # silent would make a half-readable SMB share look fully scanned.
-        warning(f"find: {exc.filename}: {exc.strerror}")
+        # stderr, not the usual warning() helper, so these lines never
+        # interleave into output a caller is piping.
+        print(f"find: {exc.filename}: {exc.strerror}", file=sys.stderr, flush=True)
 
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False, onerror=_on_error):
         dirnames.sort()
@@ -706,13 +727,13 @@ def iter_files(
                 continue
             if skip_hidden and name.startswith("."):
                 continue
-            lowered = name.lower()
+            candidate = name if case_sensitive else name.lower()
             if patterns is not None and not any(
-                fnmatchcase(lowered, pattern) for pattern in patterns
+                fnmatchcase(candidate, pattern) for pattern in patterns
             ):
                 continue
             path = directory / name
-            if path.is_symlink():
+            if path.is_symlink() or not path.is_file():
                 continue
             yield path
 

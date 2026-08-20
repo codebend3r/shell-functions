@@ -7,6 +7,8 @@ size parsing, boolean-flag parsing, and file walking.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 from utils import (
     add_bool_flag,
@@ -301,3 +303,23 @@ def test_iter_files_streams(tmp_path):
     first = next(walker)
 
     assert first.name == "a.mkv"
+
+
+def test_iter_files_case_sensitive_matching(tmp_path):
+    """A few scripts used `-name`, not `-iname`, and must stay case-sensitive."""
+    (tmp_path / "a.mkv").touch()
+    (tmp_path / "B.MKV").touch()
+
+    insensitive = {p.name for p in iter_files(tmp_path, extensions=["mkv"])}
+    sensitive = {p.name for p in iter_files(tmp_path, extensions=["mkv"], case_sensitive=True)}
+
+    assert insensitive == {"a.mkv", "B.MKV"}
+    assert sensitive == {"a.mkv"}
+
+
+def test_iter_files_yields_only_regular_files(tmp_path):
+    """`find -type f` excluded FIFOs; opening one to hash it blocks forever."""
+    (tmp_path / "real.mkv").touch()
+    os.mkfifo(tmp_path / "pipe.mkv")
+
+    assert {p.name for p in iter_files(tmp_path, extensions=["mkv"])} == {"real.mkv"}

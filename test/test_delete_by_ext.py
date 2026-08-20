@@ -195,3 +195,14 @@ def test_bare_dry_run_does_not_swallow_next_argument(tmp_path, run_script):
     run_script(SCRIPT, ["--dry-run", f"--path={tmp_path}", "--ext=jpg"], env=REAL)
 
     assert keep.exists()
+
+
+def test_glob_extension_still_anchors_on_the_dot(tmp_path, run_script):
+    """`--ext=mp*` must not match a file whose name merely contains 'mp'."""
+    (tmp_path / "a.mp4").touch()
+    (tmp_path / "important.txt").touch()
+
+    run_script(SCRIPT, [f"--path={tmp_path}", "--ext=mp*"], env=REAL)
+
+    assert not (tmp_path / "a.mp4").exists()
+    assert (tmp_path / "important.txt").exists()

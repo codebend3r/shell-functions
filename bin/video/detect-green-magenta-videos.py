@@ -25,13 +25,14 @@ import argparse
 import os
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 VENV_PYTHON = Path(
     os.environ.get("DETECT_GM_PYTHON", Path.home() / ".venvs" / "green-magenta" / "bin" / "python")
 )
 
 
-def _reexec_under_venv() -> None:
+def _reexec_under_venv() -> NoReturn:
     """Hand off to the venv interpreter when cv2 is not importable here.
 
     ``_DETECT_GM_REEXEC`` guards against a loop if the venv itself is missing
@@ -62,12 +63,21 @@ def _reexec_under_venv() -> None:
     )
 
 
-try:
-    import cv2
-    import numpy as np
-except ModuleNotFoundError:
-    _reexec_under_venv()
-    raise
+# --help and bare usage must work on a machine with no venv at all, so the
+# import is skipped entirely for those. The bash launcher checked --help before
+# it checked for the venv, and asking someone to bootstrap OpenCV just to read
+# the usage text is a poor answer to "how do I use this?".
+_WANTS_HELP = len(sys.argv) == 1 or any(a in ("-h", "--help") for a in sys.argv[1:])
+
+if not _WANTS_HELP:
+    try:
+        # ImportError, not ModuleNotFoundError: a half-installed or
+        # ABI-mismatched OpenCV - the common opencv-on-macOS failure - raises
+        # plain ImportError, which would otherwise escape as a raw traceback.
+        import cv2
+        import numpy as np
+    except ImportError:
+        _reexec_under_venv()
 
 VIDEO_EXTS = {
     ".mp4",
@@ -175,12 +185,22 @@ def analyze_video(path, sample_count=20, threshold=0.65):
 
 
 def iter_videos(paths):
+    """Yield every video under the given files and directories.
+
+    Streams per directory rather than materialising the whole tree, and skips
+    macOS ``._*`` sidecars the way the rest of the repo does.
+    """
     for p in paths:
         p = Path(p)
         if p.is_dir():
-            for f in sorted(p.rglob("*")):
-                if f.suffix.lower() in VIDEO_EXTS:
-                    yield f
+            for dirpath, dirnames, filenames in os.walk(p, followlinks=False):
+                dirnames.sort()
+                for name in sorted(filenames):
+                    if name.startswith("._"):
+                        continue
+                    f = Path(dirpath) / name
+                    if f.suffix.lower() in VIDEO_EXTS and not f.is_symlink():
+                        yield f
         elif p.is_file():
             yield p
         else:
@@ -209,6 +229,12 @@ def main():
         "--verbose", "-v", action="store_true", help="Print every video, not just flagged ones"
     )
     args = ap.parse_args()
+
+    # The bash launcher printed these before exec'ing, and the rest of the repo
+    # opens the same way. After parse_args, so --help stays clean.
+    print(f"Running command in {Path.cwd()}")
+    print(f"Scanning: {' '.join(args.paths)}")
+    print("----------------------------------------------------")
 
     bad = []
     any_seen = False
