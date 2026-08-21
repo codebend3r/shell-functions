@@ -36,6 +36,7 @@ import tui
 from commands import (
     BUILTIN_NAMES,
     CATEGORIES,
+    MENU_KEYS,
     REPO,
     VERSION,
     Command,
@@ -292,17 +293,7 @@ class Menu:
         return self.dry.get(command.name, command.has_dry_twin)
 
 
-HELP_OVERLAY = (
-    ("↑ ↓ / j k", "move"),
-    ("PgUp PgDn / g G", "jump"),
-    ("⏎", "run (asks for arguments)"),
-    ("x", "run with no arguments"),
-    ("d", "toggle dry-run for this command"),
-    ("h", "show the command's own --help"),
-    ("/", "search, Esc to clear"),
-    ("?", "this list"),
-    ("q", "quit"),
-)
+HELP_OVERLAY = MENU_KEYS
 
 
 def menu() -> int:
@@ -550,6 +541,9 @@ def detail_pane(state: Menu, width: int) -> list[str]:
     elif command.destructive:
         reason = command.no_preview_reason or "changes files"
         lines += wrap(reason, width - 8, colors.yellow, indent="warning ")
+
+    if command.setup:
+        lines += wrap(command.setup, width - 8, colors.yellow, indent="setup   ")
 
     if command.macos_only:
         lines.append(field_line("os", "macOS only"))

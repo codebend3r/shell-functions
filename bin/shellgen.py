@@ -20,7 +20,15 @@ from __future__ import annotations
 import shlex
 from pathlib import Path
 
-from commands import BUILTINS, CATEGORIES, COMMANDS, VERSION, Command
+from commands import (
+    BUILTINS,
+    CATEGORIES,
+    COMMANDS,
+    MENU_KEYS,
+    VERSION,
+    Command,
+    required_binaries,
+)
 
 SHELLS = ("zsh", "bash", "fish")
 
@@ -673,3 +681,95 @@ def generated_files() -> dict[Path, str]:
         files[COMPLETION_FILES[shell]] = completions(shell)
     files[Path(".zshrc")] = legacy_zshrc()
     return files
+
+
+# ---------------------------------------------------------------------------
+# README islands
+#
+# The parts of the README that restate the manifest - the command table, the
+# preview twins, the menu keys, the external tools - are generated between
+# markers and checked by `bun run ci`. Prose stays hand-written; facts that
+# have a single source of truth are not retyped where they can go stale.
+# ---------------------------------------------------------------------------
+
+README = Path("README.md")
+
+
+def _marker(name: str) -> tuple[str, str]:
+    return f"<!-- che:{name} -->", f"<!-- /che:{name} -->"
+
+
+def _commands_table() -> str:
+    rows = ["| Command | Does | Preview |", "| --- | --- | --- |"]
+    for category in CATEGORIES:
+        members = [command for command in COMMANDS if command.category == category.key]
+        if not members:
+            continue
+        rows.append(f"| **{category.title}** | *{category.blurb}* | |")
+        for command in members:
+            preview = f"`{command.dry_name}`" if command.has_dry_twin else ""
+            if not preview and command.dry_run == "flag":
+                preview = "`--dry-run`"
+            if not preview and any(p.flag == "--dry-run" for p in command.prompts):
+                preview = "`--dry-run`"
+            if not preview and command.no_preview_reason:
+                preview = "none"
+            rows.append(f"| `{command.name}` | {command.summary} | {preview} |")
+    return "\n".join(rows)
+
+
+def _builtins_table() -> str:
+    rows = ["| Command | Does |", "| --- | --- |"]
+    for command in BUILTINS:
+        rows.append(f"| `che {command.name}` | {command.summary} |")
+    return "\n".join(rows)
+
+
+def _keys_table() -> str:
+    rows = ["| Key | Does |", "| --- | --- |"]
+    for key, description in MENU_KEYS:
+        rows.append(f"| `{key}` | {description} |")
+    return "\n".join(rows)
+
+
+def _tools_table() -> str:
+    rows = ["| Tool | Needed by |", "| --- | --- |"]
+    for binary, users in required_binaries().items():
+        names = ", ".join(f"`{name}`" for name in users)
+        rows.append(f"| `{binary}` | {names} |")
+
+    extra = [command for command in COMMANDS if command.setup]
+    for command in extra:
+        rows.append(f"| (not a binary) | `{command.name}` {command.setup} |")
+    return "\n".join(rows)
+
+
+def readme_islands() -> dict[str, str]:
+    return {
+        "commands": _commands_table(),
+        "builtins": _builtins_table(),
+        "keys": _keys_table(),
+        "tools": _tools_table(),
+        "count": (
+            f"{len(COMMANDS)} commands across {len({c.category for c in COMMANDS})} categories, "
+            f"plus {len(BUILTINS)} built into `che` itself"
+        ),
+    }
+
+
+def render_readme(current: str) -> str:
+    """Replace every marked island in ``current`` with what the manifest says.
+
+    Unmarked prose is left exactly as written. A marker that is missing from
+    the README is reported rather than silently skipped, because a section that
+    quietly stopped being checked is worse than one that was never checked.
+    """
+    updated = current
+    for name, body in readme_islands().items():
+        begin, end = _marker(name)
+        if begin not in updated or end not in updated:
+            raise ValueError(f"README.md is missing the {begin} … {end} markers")
+        head, _, rest = updated.partition(begin)
+        _, _, tail = rest.partition(end)
+        updated = f"{head}{begin}\n{body}\n{end}{tail}"
+    return updated

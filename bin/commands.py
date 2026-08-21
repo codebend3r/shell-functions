@@ -125,6 +125,9 @@ class Command:
     # reason. The menu shows it, and the manifest test demands one rather than
     # letting a missing dry-run pass unnoticed.
     no_preview_reason: str = ""
+    # One-off setup a command needs that `needs` cannot express, because it is
+    # not a binary on PATH (a venv, a credential, a mounted volume).
+    setup: str = ""
     macos_only: bool = False
     body: str = ""  # shell-only wrapper body, for commands with no script
     tags: tuple[str, ...] = ()
@@ -441,7 +444,10 @@ COMMANDS: tuple[Command, ...] = (
         summary="Detect videos with the green/magenta chroma artifact",
         script="video/detect-green-magenta-videos.py",
         sound=3,
-        needs=("ffprobe",),
+        # The only command here that is not standard-library-only: it re-execs
+        # itself under a venv holding OpenCV. Not a binary on PATH, so `needs`
+        # cannot express it and doctor must not claim to have checked it.
+        setup="needs OpenCV in ~/.venvs/green-magenta (override with $DETECT_GM_PYTHON)",
         tags=("corrupt", "artifact", "opencv"),
         prompts=(Prompt("", "Files or folders to scan", kind="path", required=True),),
     ),
@@ -721,6 +727,27 @@ BUILTINS: tuple[Command, ...] = (
 )
 
 BUILTIN_NAMES = frozenset(command.name for command in BUILTINS)
+
+
+# ---------------------------------------------------------------------------
+# Menu keys
+#
+# Lives here rather than in che.py so the README can be generated from it: a
+# keybinding documented in two hand-written places is a keybinding that will
+# eventually be wrong in one of them.
+# ---------------------------------------------------------------------------
+
+MENU_KEYS: tuple[tuple[str, str], ...] = (
+    ("↑ ↓ / j k", "move"),
+    ("PgUp PgDn / g G", "jump"),
+    ("⏎", "run (asks for arguments)"),
+    ("x", "run with no arguments"),
+    ("d", "toggle dry-run for this command"),
+    ("h", "show the command's own --help"),
+    ("/", "search, Esc to clear"),
+    ("?", "this list"),
+    ("q", "quit"),
+)
 
 
 # ---------------------------------------------------------------------------

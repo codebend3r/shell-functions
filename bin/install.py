@@ -600,10 +600,25 @@ def strip_legacy(path: Path, *, dry_run: bool = False) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
+def _expected_files() -> dict[Path, str]:
+    """Every generated path mapped to the contents the manifest implies.
+
+    ``shell/`` is generated whole. The README is generated in place: only the
+    marked islands are replaced, so its prose survives.
+    """
+    expected = dict(shellgen.generated_files())
+
+    readme = REPO / shellgen.README
+    if readme.exists():
+        expected[shellgen.README] = shellgen.render_readme(readme.read_text(encoding="utf-8"))
+
+    return expected
+
+
 def write_generated(*, dry_run: bool = False) -> list[Path]:
-    """Refresh everything under ``shell/``; returns the files that changed."""
+    """Refresh the generated files; returns the ones that changed."""
     changed = []
-    for relative, contents in shellgen.generated_files().items():
+    for relative, contents in _expected_files().items():
         target = REPO / relative
         if target.exists() and target.read_text(encoding="utf-8") == contents:
             continue
@@ -617,7 +632,7 @@ def write_generated(*, dry_run: bool = False) -> list[Path]:
 def check_generated() -> list[Path]:
     """Generated files that differ from what the manifest would produce."""
     stale = []
-    for relative, contents in shellgen.generated_files().items():
+    for relative, contents in _expected_files().items():
         target = REPO / relative
         if not target.exists() or target.read_text(encoding="utf-8") != contents:
             stale.append(relative)
@@ -1372,6 +1387,13 @@ def build_install_parser(prog: str = "che install"):
 def install_main(argv: list[str] | None = None) -> int:
     parser = build_install_parser()
     args = parser.parse_args(argv)
+
+    if args.generate or args.check:
+        try:
+            _expected_files()
+        except ValueError as exc:
+            warning(f"❌ {exc}")
+            return 1
 
     if args.generate:
         changed = write_generated(dry_run=args.dry_run)

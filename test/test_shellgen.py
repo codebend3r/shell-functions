@@ -13,7 +13,7 @@ import subprocess
 
 import pytest
 import shellgen
-from commands import COMMANDS, resolve
+from commands import COMMANDS, REPO, resolve
 
 ZSH = shutil.which("zsh")
 BASH = shutil.which("bash")
@@ -188,3 +188,31 @@ def test_the_guard_covers_every_name_the_file_defines(shell):
     stash = text.split("_che_stash_aliases", 2)[2].split("\n\n")[0]
     for command in COMMANDS:
         assert command.name in stash, f"{command.name} is missing from the alias guard"
+
+
+def test_readme_keeps_every_generated_marker():
+    """A section that quietly loses its markers stops being checked, which is
+    how a README goes stale without anyone noticing."""
+    readme = (REPO / shellgen.README).read_text()
+    for name in shellgen.readme_islands():
+        assert f"<!-- che:{name} -->" in readme
+        assert f"<!-- /che:{name} -->" in readme
+
+
+def test_readme_islands_match_the_manifest():
+    readme = (REPO / shellgen.README).read_text()
+    assert shellgen.render_readme(readme) == readme, "run `bun run generate`"
+
+
+def test_readme_documents_how_to_install():
+    readme = (REPO / shellgen.README).read_text()
+    assert "## Install" in readme
+    assert "install.sh" in readme
+    assert "--shells=" in readme
+    assert "che uninstall" in readme
+    assert "Python 3.12+" in readme
+
+
+def test_render_readme_rejects_a_missing_marker():
+    with pytest.raises(ValueError, match="markers"):
+        shellgen.render_readme("# Shell Functions\n\nno markers here\n")
