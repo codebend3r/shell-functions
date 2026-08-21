@@ -1075,6 +1075,12 @@ def diagnose() -> list[dict]:
                 detail += ", shadowed: " + ", ".join(
                     f"{name} ({how})" for name, how in shadowing[:3]
                 )
+                shadow_fix = (
+                    "the alias wins at the prompt; run `\\name` for the wrapper, "
+                    "or remove the alias"
+                    if any(how == "alias" for _, how in shadowing)
+                    else "move your definition above the che block"
+                )
             checks.append(
                 {
                     "name": f"{target.name}: {str(rc_file).replace(str(home()), '~')}",
@@ -1083,11 +1089,7 @@ def diagnose() -> list[dict]:
                     "fix": (
                         "che install --replace-legacy"
                         if legacy
-                        else (
-                            "remove the shadowing alias or definition"
-                            if shadowing
-                            else "che install"
-                        )
+                        else (shadow_fix if shadowing else "che install")
                     ),
                 }
             )

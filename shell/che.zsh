@@ -49,6 +49,50 @@ che() {
   fi
 }
 
+# An alias sharing a name with a wrapper below is fatal, not cosmetic: zsh
+# expands aliases while *parsing*, so `remove-metadata() {` becomes
+# `find ./ -type f …() {` and the parse error aborts the rest of this file -
+# taking every wrapper after it with it.
+#
+# So stash any colliding alias, define the functions, then put it back.
+# Clearing it outright would silently replace a command the user aliased on
+# purpose; restoring it keeps their alias winning at the prompt, exactly as it
+# did before che was installed. `che doctor` reports the collision, and
+# `\name` (backslash) reaches the wrapper without expanding the alias.
+typeset -ga _che_stashed_aliases=()
+
+_che_stash_aliases() {
+  local name
+  for name in "$@"; do
+    if [[ -n ${aliases[$name]-} ]]; then
+      _che_stashed_aliases+=("${name}=${aliases[$name]}")
+      unalias -- "$name"
+    fi
+  done
+}
+
+_che_restore_aliases() {
+  local entry
+  for entry in "${_che_stashed_aliases[@]}"; do
+    alias -- "$entry"
+  done
+  _che_stashed_aliases=()
+}
+
+_che_stash_aliases che all-actions all-actions-watch checkout-my-branches \
+  clean-stale-branches clean-stale-branches-dr prune-worktrees \
+  prune-worktrees-dr sync-all-branches sync-all-branches-dr \
+  update-from-origin update-local-branches show-codecs fix-codecs \
+  fix-codecs-dr find-video-mkv-issues validate-video-files \
+  scan-videos-audio-language remove-metadata rename-video-file \
+  delete-duplicate-videos delete-duplicate-videos-dr video-list \
+  detect-green-magenta-videos find-movie-by-year largest-tv-shows \
+  delete-by-ext delete-by-ext-dr delete-empty-folders \
+  delete-empty-folders-dr delete-smb-files delete-smb-files-dr \
+  files-under-size files-under-size-dr find-largest-files make-alpha-dir \
+  compress-folders list-permission mount-all-drives eject-all-drives \
+  eject-all-drives-dr ping-nas update-brew update-brew-dr btop
+
 # --------------------------------------------------------------------------
 # Git - Branch hygiene, worktrees and GitHub Actions
 # --------------------------------------------------------------------------
@@ -328,6 +372,8 @@ update-brew-dr() {
 btop() {
   "$CHE_PYTHON" "$CHE_BIN/system/btop-launch.py" "$@"
 }
+
+_che_restore_aliases
 
 # Completions. compdef only exists once compinit has run; when it has not,
 # skip quietly rather than erroring at shell start.

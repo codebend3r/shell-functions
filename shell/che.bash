@@ -49,6 +49,44 @@ che() {
   fi
 }
 
+# Same trap as zsh: with expand_aliases on (every interactive bash), an alias
+# sharing a name with a wrapper below turns its definition into a syntax error
+# and the rest of this file never loads. Stash, define, restore - so the user's
+# alias keeps winning at the prompt and `\name` reaches the wrapper.
+_che_stashed_aliases=()
+
+_che_stash_aliases() {
+  local name
+  for name in "$@"; do
+    if alias "$name" >/dev/null 2>&1; then
+      _che_stashed_aliases+=("$(alias "$name")")
+      unalias "$name"
+    fi
+  done
+}
+
+_che_restore_aliases() {
+  local entry
+  for entry in "${_che_stashed_aliases[@]}"; do
+    eval "$entry"
+  done
+  _che_stashed_aliases=()
+}
+
+_che_stash_aliases che all-actions all-actions-watch checkout-my-branches \
+  clean-stale-branches clean-stale-branches-dr prune-worktrees \
+  prune-worktrees-dr sync-all-branches sync-all-branches-dr \
+  update-from-origin update-local-branches show-codecs fix-codecs \
+  fix-codecs-dr find-video-mkv-issues validate-video-files \
+  scan-videos-audio-language remove-metadata rename-video-file \
+  delete-duplicate-videos delete-duplicate-videos-dr video-list \
+  detect-green-magenta-videos find-movie-by-year largest-tv-shows \
+  delete-by-ext delete-by-ext-dr delete-empty-folders \
+  delete-empty-folders-dr delete-smb-files delete-smb-files-dr \
+  files-under-size files-under-size-dr find-largest-files make-alpha-dir \
+  compress-folders list-permission mount-all-drives eject-all-drives \
+  eject-all-drives-dr ping-nas update-brew update-brew-dr btop
+
 # --------------------------------------------------------------------------
 # Git - Branch hygiene, worktrees and GitHub Actions
 # --------------------------------------------------------------------------
@@ -328,6 +366,8 @@ update-brew-dr() {
 btop() {
   "$CHE_PYTHON" "$CHE_BIN/system/btop-launch.py" "$@"
 }
+
+_che_restore_aliases
 
 # Completions, when this is bash and the completion builtin is available.
 if [ -n "${BASH_VERSION:-}" ] && [ -r "${CHE_HOME}/shell/completions/che.bash" ]; then

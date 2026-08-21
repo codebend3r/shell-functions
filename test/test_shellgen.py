@@ -133,3 +133,58 @@ def test_completion_flags_come_from_the_manifest():
 
 def test_generation_is_deterministic():
     assert shellgen.generated_files() == shellgen.generated_files()
+
+
+@pytest.mark.skipif(not ZSH, reason="zsh is not installed")
+def test_a_colliding_alias_does_not_break_the_file(tmp_path):
+    """zsh expands aliases while parsing, so `alias show-codecs=…` turns the
+    wrapper's definition into a parse error that aborts everything after it.
+    The guard has to stash the alias, define the functions, and put it back."""
+    wrapper = tmp_path / "che.zsh"
+    wrapper.write_text(shellgen.wrappers("zsh"))
+
+    script = tmp_path / "probe.zsh"
+    script.write_text(
+        "alias show-codecs='echo mine'\n"
+        f"source {wrapper}\n"
+        "(( ${+functions[show-codecs]} )) && print function-defined\n"
+        "(( ${+functions[update-brew]} )) && print later-wrapper-defined\n"
+        "print alias=${aliases[show-codecs]}\n"
+    )
+
+    result = subprocess.run([ZSH, "-f", str(script)], capture_output=True, text=True, check=False)
+    assert "function-defined" in result.stdout, result.stderr
+    # A wrapper defined *after* the collision proves the file did not abort.
+    assert "later-wrapper-defined" in result.stdout, result.stderr
+    # The user aliased it on purpose, so it survives and still wins.
+    assert "alias=echo mine" in result.stdout
+    assert "parse error" not in result.stderr
+
+
+@pytest.mark.skipif(not BASH, reason="bash is not installed")
+def test_bash_guard_restores_a_colliding_alias(tmp_path):
+    wrapper = tmp_path / "che.bash"
+    wrapper.write_text(shellgen.wrappers("bash"))
+
+    script = tmp_path / "probe.bash"
+    script.write_text(
+        "shopt -s expand_aliases\n"
+        "alias show-codecs='echo mine'\n"
+        f"source {wrapper}\n"
+        "declare -F show-codecs >/dev/null && echo function-defined\n"
+        "declare -F update-brew >/dev/null && echo later-wrapper-defined\n"
+        "alias show-codecs\n"
+    )
+
+    result = subprocess.run([BASH, str(script)], capture_output=True, text=True, check=False)
+    assert "function-defined" in result.stdout, result.stderr
+    assert "later-wrapper-defined" in result.stdout, result.stderr
+    assert "echo mine" in result.stdout
+
+
+@pytest.mark.parametrize("shell", ["zsh", "bash"])
+def test_the_guard_covers_every_name_the_file_defines(shell):
+    text = shellgen.wrappers(shell)
+    stash = text.split("_che_stash_aliases", 2)[2].split("\n\n")[0]
+    for command in COMMANDS:
+        assert command.name in stash, f"{command.name} is missing from the alias guard"

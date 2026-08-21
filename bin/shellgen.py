@@ -150,6 +150,87 @@ def _posix_wrappers() -> list[str]:
     return lines
 
 
+ZSH_ALIAS_GUARD = """
+# An alias sharing a name with a wrapper below is fatal, not cosmetic: zsh
+# expands aliases while *parsing*, so `remove-metadata() {` becomes
+# `find ./ -type f …() {` and the parse error aborts the rest of this file -
+# taking every wrapper after it with it.
+#
+# So stash any colliding alias, define the functions, then put it back.
+# Clearing it outright would silently replace a command the user aliased on
+# purpose; restoring it keeps their alias winning at the prompt, exactly as it
+# did before che was installed. `che doctor` reports the collision, and
+# `\\name` (backslash) reaches the wrapper without expanding the alias.
+typeset -ga _che_stashed_aliases=()
+
+_che_stash_aliases() {
+  local name
+  for name in "$@"; do
+    if [[ -n ${aliases[$name]-} ]]; then
+      _che_stashed_aliases+=("${name}=${aliases[$name]}")
+      unalias -- "$name"
+    fi
+  done
+}
+
+_che_restore_aliases() {
+  local entry
+  for entry in "${_che_stashed_aliases[@]}"; do
+    alias -- "$entry"
+  done
+  _che_stashed_aliases=()
+}
+"""
+
+BASH_ALIAS_GUARD = """
+# Same trap as zsh: with expand_aliases on (every interactive bash), an alias
+# sharing a name with a wrapper below turns its definition into a syntax error
+# and the rest of this file never loads. Stash, define, restore - so the user's
+# alias keeps winning at the prompt and `\\name` reaches the wrapper.
+_che_stashed_aliases=()
+
+_che_stash_aliases() {
+  local name
+  for name in "$@"; do
+    if alias "$name" >/dev/null 2>&1; then
+      _che_stashed_aliases+=("$(alias "$name")")
+      unalias "$name"
+    fi
+  done
+}
+
+_che_restore_aliases() {
+  local entry
+  for entry in "${_che_stashed_aliases[@]}"; do
+    eval "$entry"
+  done
+  _che_stashed_aliases=()
+}
+"""
+
+
+def _guarded_names() -> list[str]:
+    """Every name the file defines, in the order the guard should clear them."""
+    from commands import wrapper_names
+
+    return ["che", *wrapper_names()]
+
+
+def _stash_call() -> str:
+    """`_che_stash_aliases` invocation, wrapped so the line stays readable."""
+    lines: list[str] = []
+    current = "_che_stash_aliases"
+    for name in _guarded_names():
+        candidate = f"{current} {name}"
+        if len(candidate) > 76:
+            lines.append(f"{current} \\")
+            current = f"  {name}"
+            continue
+        current = candidate
+    lines.append(current)
+    return "\n".join(lines)
+
+
 def _render_posix(shell: str) -> str:
     resolve_self = {
         "zsh": '  CHE_HOME="${${(%):-%x}:A:h:h}"',
@@ -218,7 +299,22 @@ if [ -n "${BASH_VERSION:-}" ] && [ -r "${CHE_HOME}/shell/completions/che.bash" ]
 fi""",
     }
 
-    return "\n".join([head, *_posix_wrappers(), "", tail_by_shell[shell].strip("\n"), ""])
+    guard = {"zsh": ZSH_ALIAS_GUARD, "bash": BASH_ALIAS_GUARD}[shell]
+
+    return "\n".join(
+        [
+            head,
+            guard.rstrip("\n"),
+            "",
+            _stash_call(),
+            *_posix_wrappers(),
+            "",
+            "_che_restore_aliases",
+            "",
+            tail_by_shell[shell].strip("\n"),
+            "",
+        ]
+    )
 
 
 # ---------------------------------------------------------------------------
