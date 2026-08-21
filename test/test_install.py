@@ -340,7 +340,10 @@ def test_generated_files_in_the_repo_are_current():
     assert install.check_generated() == [], "run `bun run generate` and commit the result"
 
 
-def test_doctor_reports_a_missing_install(fake_home, capsys):
+def test_doctor_reports_a_missing_install(fake_home, monkeypatch, capsys):
+    # diagnose() watches only the login shell's rc files when nothing is
+    # installed yet, so pin SHELL or the zsh: check disappears on CI (bash).
+    monkeypatch.setenv("SHELL", "/bin/zsh")
     checks = {check["name"]: check for check in install.diagnose()}
     assert checks["install record"]["status"] == install.FAIL
     assert any(name.startswith("zsh:") for name in checks)
